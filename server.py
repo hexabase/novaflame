@@ -6,84 +6,101 @@
 # ///
 
 import httpx
-import asyncio
 from mcp.server.fastmcp import FastMCP
 
 # ==========================================
-# 設定
+# 1. 設定：ファイルの場所
 # ==========================================
-ORG_NAME = "hexabase"
-REPO_NAME = "novaflame"
+ORG = "hexabase"
+REPO = "novaflame"
 BRANCH = "main"
+BASE_URL = f"https://raw.githubusercontent.com/{ORG}/{REPO}/{BRANCH}"
 
-BASE_URL = f"https://raw.githubusercontent.com/{ORG_NAME}/{REPO_NAME}/{BRANCH}"
-SKILL_ROOT = ""
-
-FILES_TO_LOAD = {
-    "Main Skill": "SKILL.md",
-    "Accessibility": "references/accessibility.md",
-    "Components Catalog": "references/components-catalog.md",
-    "Design System": "references/design-system.md",
-    "Layout Patterns": "references/layout-patterns.md",
-    "Usage Guidelines": "references/usage-guidelines.md"
+# リファレンスのマップ（キー名: ファイルパス）
+# ※ ここを増やせば、Claudeが読める本が増えます
+REFERENCE_DOCS = {
+    "components": "references/components-catalog.md",  # コンポーネント詳細
+    "design": "references/design-system.md",          # 色・文字・トークン
+    "layout": "references/layout-patterns.md",        # レイアウトパターン
+    "usage": "references/usage-guidelines.md",        # ガイドライン
+    "a11y": "references/accessibility.md"             # アクセシビリティ
 }
+
+MAIN_SKILL_FILE = "SKILL.md"
 
 mcp = FastMCP("Novaflame")
 
-async def fetch_file(client, label, relative_path):
-    # パスの調整
-    if SKILL_ROOT:
-        path = f"{SKILL_ROOT}/{relative_path}"
-    else:
-        path = relative_path
-    
-    # スラッシュが重複しないように調整
-    path = path.lstrip("/")
-    
-    url = f"{BASE_URL}/{path}"
-    try:
-        response = await client.get(url)
-        if response.status_code == 200:
-            return f"\n\n--- {label} ({relative_path}) ---\n{response.text}"
-        else:
-            return f"\n\n--- {label} ---\n[Error: {response.status_code} Not Found at {url}]"
-    except Exception as e:
-        return f"\n\n--- {label} ---\n[Error: {str(e)}]"
-
-async def get_combined_context() -> str:
-    """全ファイルを結合したテキストを返すヘルパー関数"""
+async def fetch_github_text(path: str) -> str:
+    """GitHubからRawテキストを取得する共通関数"""
+    url = f"{BASE_URL}/{path.lstrip('/')}"
     async with httpx.AsyncClient() as client:
-        tasks = [
-            fetch_file(client, label, path) 
-            for label, path in FILES_TO_LOAD.items()
-        ]
-        results = await asyncio.gather(*tasks)
+        try:
+            response = await client.get(url)
+            if response.status_code == 200:
+                return response.text
+            return f"Error: {response.status_code} Not Found at {url}"
+        except Exception as e:
+            return f"Error: {str(e)}"
 
-    combined_text = """
-=== NOVAFLAME DESIGN SYSTEM ===
-以下のデザインシステムとガイドラインに従って実装を行ってください。
-"""
-    combined_text += "".join(results)
-    return combined_text
-
-# ---------------------------------------------------------
-# 1. ツールとしての定義 (Claudeが「発動」と言われたらこれを使う)
-# ---------------------------------------------------------
+# ==========================================
+# 2. 受付カウンター（発動用ツール）
+# ==========================================
 @mcp.tool()
-async def load_novaflame_design_system() -> str:
+async def activate_novaflame_system() -> str:
     """
-    Novaflameデザインシステム全体（SKILL.mdおよび全リファレンス）を読み込みます。
-    ユーザーから「Novaflame発動」「デザインシステムを適用して」などの指示があった場合に実行してください。
+    【必須】ユーザーが「Novaflame発動」と指示したら最初に実行するツール。
+    
+    システム全体をロードするのではなく、
+    1. 基本ルール(SKILL.md)
+    2. 利用可能なリファレンスのリスト(目次)
+    をAIに認識させます。詳細は別途 read_reference ツールで取得させます。
     """
-    return await get_combined_context()
+    # 1. 基本ルールだけ軽く読み込む
+    skill_content = await fetch_github_text(MAIN_SKILL_FILE)
+    
+    # 2. 読める本のリストを作る
+    docs_list = "\n".join([f"- {key}" for key in REFERENCE_DOCS.keys()])
 
-# ---------------------------------------------------------
-# 2. リソースとしての定義 (Claudeが中身を探索したい場合に使う)
-# ---------------------------------------------------------
-@mcp.resource("novaflame://system/all")
-async def get_novaflame_resource() -> str:
-    """Novaflameデザインシステムの全テキストデータ"""
-    return await get_combined_context()
+    return f"""
+✅ Novaflame System Activated (Librarian Mode).
+
+基本ルールをロードしました。コンテキスト保護のため、詳細は分割管理されています。
+実装時に詳細情報が必要になったら、必ずツール `read_novaflame_reference(key)` を使用して情報を取得してください。
+
+■ 利用可能なリファレンスキー一覧:
+{docs_list}
+
+---
+[基本ルール (SKILL.md)]
+{skill_content}
+"""
+
+# ==========================================
+# 3. 書庫（詳細取得用ツール）
+# ==========================================
+@mcp.tool()
+async def read_novaflame_reference(key: str) -> str:
+    """
+    特定のリファレンス詳細を読み込みます。
+    activate_novaflame_system 実行後、具体的な実装コードや仕様が必要になったタイミングで
+    AIが自発的に呼び出してください。
+    
+    Args:
+        key: 取得したいドキュメントのキー (例: "components", "layout", "design")
+    """
+    if key not in REFERENCE_DOCS:
+        valid_keys = ", ".join(REFERENCE_DOCS.keys())
+        return f"エラー: '{key}' というドキュメントはありません。利用可能: {valid_keys}"
+
+    path = REFERENCE_DOCS[key]
+    content = await fetch_github_text(path)
+    
+    return f"""
+📖 REFERENCE LOADED: {key}
+(Source: {path})
+--------------------------------------------------
+{content}
+"""
 
 if __name__ == "__main__":
     mcp.run()
